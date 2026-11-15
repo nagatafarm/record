@@ -1,5 +1,5 @@
 /*
- * 記録画面（LIFF）の在庫の画面。?go=stock（入庫出庫）・?go=stocklist（在庫を見る）で app.js から呼ばれる。
+ * 記録画面（LIFF）の在庫の画面。?go=stock（入庫出庫）・?go=stocklist（在庫を見る）・?go=stockhistory（入出庫の履歴）で app.js から呼ばれる。
  * 種類・単位・品目・区分・残りの数は毎回 GAS（?route=stock）から受け取る（このファイルに品目名・種類名・単位などの現場の情報を書かない）。
  * 表示はすべて createElement と textContent で作る。キーボードを出す要素は、数の入力欄・品目名で探す欄・JAN コードの番号の欄だけ。
  * 入庫出庫の画面には、品目名で探す欄と、カメラで JAN コード（13けたのバーコード）を読む機能（JAN の切り替えの定数が真のときだけ）を置く。
@@ -161,7 +161,31 @@ var STOCK_APP_TEXT = {
   cancelNotSent: '送っていません（途中で止めました）',
   cancelStopped: '途中で止めたため、残りの記録は取り消していません。「続けて取り消す」で一覧を開き直して確かめてください',
   cancelEach: '記録ごとの結果',
-  cancelRemain: '取り消した品目の残り'
+  cancelRemain: '取り消した品目の残り',
+  titleHistory: '入出庫の履歴',
+  openHistory: '入出庫の履歴',
+  historyAsOfMid: ' 時点・',
+  historyDaysTail: '日分',
+  historyManyHead: '記録が多いため、新しい ',
+  historyManyTail: ' 件だけを出しています',
+  historyUnavailable: '入出庫の履歴はまだ使えません（管理者に連絡してください）',
+  historyEmpty: 'この期間の記録はありません',
+  historyNone: '当てはまる記録がありません',
+  historyCountTail: '件',
+  historyCancelledHead: '（ほかに取消 ',
+  historyCancelledTail: '件）',
+  historyCancelledMark: '（取消）',
+  historyNoName: '（名前なし）',
+  historyNotReadyHead: '設定がまだの種類：',
+  colAt: '日時',
+  colKind: '種類',
+  colItem: '品目',
+  colMove: '動き',
+  colCount: '数',
+  colWho: '人',
+  sortDesc: ' ▼',
+  sortAsc: ' ▲',
+  lastInHead: '最終入庫 '
 };
 
 /** まとめての記録で一度に送れる品目の上限。 */
@@ -636,8 +660,81 @@ function stockJanTableMap(data) {
   return map;
 }
 
+/** 入出庫の履歴の応答の記録の上限（GAS と同じ）。 */
+var STOCK_HISTORY_MAX = 2000;
+
+/** 入出庫の履歴の並べ替えのキー（この順にボタンを並べる。日時・品目・動き・人）。 */
+var STOCK_SORT_KEYS = ['at', 'item', 'move', 'who'];
+
+/** 広い画面（PC）とみなす幅。 */
+var STOCK_WIDE_QUERY = '(min-width: 900px)';
+
+function stockHistoryBody(idToken) {
+  return { action: 'stockHistory', idToken: idToken };
+}
+
+/** STOCK_HISTORY_OK の形なら true。例外を投げない。 */
+function stockIsHistory(data) {
+  try {
+    if (!stockIsObject_(data) || data.result !== 'ok') return false;
+    if (typeof data.asOf !== 'string' || typeof data.days !== 'number' || !Number.isInteger(data.days) || data.days < 1) return false;
+    if (typeof data.truncated !== 'boolean' || !Array.isArray(data.kinds) || !Array.isArray(data.records)) return false;
+    if (data.records.length > STOCK_HISTORY_MAX) return false;
+    var kindsOk = data.kinds.every(function (k) {
+      return stockIsObject_(k) && typeof k.kind === 'string' && k.kind.length >= 1 && typeof k.unit === 'string' && typeof k.ready === 'boolean';
+    });
+    if (!kindsOk) return false;
+    return data.records.every(function (r) {
+      return stockIsObject_(r) && typeof r.kind === 'string' && typeof r.at === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(r.at) &&
+        typeof r.time === 'string' && typeof r.item === 'string' && r.item.length >= 1 && STOCK_MOVES.indexOf(r.move) >= 0 &&
+        typeof r.count === 'number' && Number.isInteger(r.count) && r.count >= 0 && r.count <= 99999 &&
+        typeof r.who === 'string' && typeof r.cancelled === 'boolean';
+    });
+  } catch (err) {
+    return false;
+  }
+}
+
 /**
- * 在庫の画面を root の中に作る（ブラウザだけで使う）。mode は 'stock'（入庫出庫。まとめて記録の画面から始める）か 'stocklist'（在庫を見る）。
+ * 履歴の記録を key（STOCK_SORT_KEYS のどれか）と dir（'asc'・'desc'）で並べた新しい配列を返す（入力を変えない）。
+ * 日時は at の字、品目・人は localeCompare（ja）、動きは STOCK_MOVES の順で比べる。同じ値どうしはいつも入力の並びのまま。
+ * ただし日時の昇順は、日時の降順のちょうど逆（同じ日時は入力の逆）。知らない key は入力の並びの写し。例外を投げない。
+ */
+function stockHistorySort(records, key, dir) {
+  try {
+    if (!Array.isArray(records)) return [];
+    var list = records.map(function (r, i) { return { r: r, i: i }; });
+    if (STOCK_SORT_KEYS.indexOf(key) < 0) return list.map(function (x) { return x.r; });
+    var sign = dir === 'asc' ? 1 : -1;
+    var cmp = function (a, b) {
+      if (key === 'at') return a.at < b.at ? -1 : a.at > b.at ? 1 : 0;
+      if (key === 'move') return STOCK_MOVES.indexOf(a.move) - STOCK_MOVES.indexOf(b.move);
+      return String(a[key]).localeCompare(String(b[key]), 'ja');
+    };
+    list.sort(function (x, y) {
+      var c = cmp(x.r, y.r);
+      if (c !== 0) return sign * c;
+      if (key === 'at' && sign === 1) return y.i - x.i;
+      return x.i - y.i;
+    });
+    return list.map(function (x) { return x.r; });
+  } catch (err) {
+    return Array.isArray(records) ? records.slice() : [];
+  }
+}
+
+/** 広い画面（STOCK_WIDE_QUERY に当たる）なら true。window・matchMedia がない・例外は false。 */
+function stockIsWide() {
+  try {
+    return typeof window !== 'undefined' && window !== null && typeof window.matchMedia === 'function' &&
+      window.matchMedia(STOCK_WIDE_QUERY).matches === true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * 在庫の画面を root の中に作る（ブラウザだけで使う）。mode は 'stock'（入庫出庫。まとめて記録の画面から始める）か 'stocklist'（在庫を見る）か 'stockhistory'（入出庫の履歴）。
  * app.js の関数・状態は使わない。
  */
 function stockAppStart(root, config, idToken, mode) {
@@ -666,6 +763,8 @@ function stockAppStart(root, config, idToken, mode) {
   var batchFilterFold = { key: '', closed: Object.create(null) };
   /** まとめての画面の帯の部品と本文の要素（表が出ている間だけ。renderBatch のたびに作り直す）。 */
   var bv = null;
+  /** 入出庫の履歴の画面（データ・探す文字・種類・並べ替え・広い画面か・帯の部品・本文の要素）。renderHistory のたびに作り直す。 */
+  var hv = null;
 
   function el(tag, className, text) {
     var e = document.createElement(tag);
@@ -691,6 +790,7 @@ function stockAppStart(root, config, idToken, mode) {
     reg.view = null;
     while (root.firstChild) root.removeChild(root.firstChild);
     document.title = title;
+    if (stockIsWide()) root.style.maxWidth = title === T.titleList || title === T.titleHistory ? '1200px' : '';
     root.appendChild(el('h1', 'title', title));
   }
 
@@ -788,6 +888,14 @@ function stockAppStart(root, config, idToken, mode) {
       m.style.fontSize = '16px';
       m.style.fontWeight = 'bold';
       left.appendChild(m);
+    }
+    if (typeof entry.lastIn === 'string' && /^(\d{4}\/)?\d{1,2}\/\d{1,2} \d{1,2}:\d{2}$/.test(entry.lastIn)) {
+      var last = el('div', 'last-in', T.lastInHead + entry.lastIn);
+      last.style.fontSize = '14px';
+      last.style.fontWeight = 'normal';
+      last.style.color = '#4a524a';
+      last.style.lineHeight = '1.35';
+      left.appendChild(last);
     }
     var right = amountEl(entry.stock, unit);
     right.style.flex = '0 0 auto';
@@ -2782,11 +2890,13 @@ function stockAppStart(root, config, idToken, mode) {
     else root.appendChild(el('p', 'note', T.orderCountHead + T.orderCountNone));
     lv = { data: data, text: '', order: false, kinds: Object.create(null), groups: Object.create(null), band: null, filterAll: null, filterOrder: null,
       body: [], anchor: null, fkey: '', fkinds: Object.create(null), fgroups: Object.create(null) };
+    lv.wide = stockIsWide();
     root.appendChild(listBand());
     var row = el('div', 'action-row result-actions');
     row.appendChild(button(T.openRecord, 'again', function () {
       useListBatch(data);
     }));
+    row.appendChild(button(T.openHistory, 'again', openHistory));
     row.appendChild(closeButton());
     root.appendChild(row);
     lv.anchor = row;
@@ -2910,12 +3020,19 @@ function stockAppStart(root, config, idToken, mode) {
     var box = el('div');
     box.style.paddingLeft = '12px';
     box.style.borderLeft = '4px solid #7a847a';
+    var wide = lv.wide === true;
+    if (wide) {
+      box.style.display = 'grid';
+      box.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+      box.style.columnGap = '24px';
+    }
     var key = listGroupKey(k.kind, g.label);
     var name = g.label;
     var fill = function (open) {
       while (b.nextSibling) box.removeChild(b.nextSibling);
       if (!open) {
         var s = orderSomeEl(orderCount(g.items));
+        if (s !== null && wide) s.style.gridColumn = '1 / -1';
         if (s !== null) box.appendChild(s);
         return;
       }
@@ -2940,9 +3057,249 @@ function stockAppStart(root, config, idToken, mode) {
       fill(open);
       if (!open) keepBelowBand(b, lv.band);
     });
+    if (wide) b.style.gridColumn = '1 / -1';
     box.appendChild(b);
     fill(first);
     return box;
+  }
+
+  // ---- 入出庫の履歴 ----
+
+  /** 履歴の読み込みに失敗したときの画面（文と、在庫を見る・閉じる）。 */
+  function renderHistoryFailed(text) {
+    showMessage(T.titleHistory, text);
+    var row = el('div', 'action-row result-actions');
+    row.appendChild(button(T.openList, 'again', openList));
+    row.appendChild(closeButton());
+    root.appendChild(row);
+  }
+
+  /** stockHistory を読み、正しければ履歴の画面。古い GAS（invalid）は「まだ使えません」。 */
+  function openHistory() {
+    showMessage(T.titleHistory, T.loading);
+    post(stockHistoryBody(idToken)).then(function (r) {
+      if (!r.ok) {
+        renderHistoryFailed(T.loadFailed);
+        return;
+      }
+      var data = r.data;
+      if (data.result === 'invalid') {
+        renderHistoryFailed(T.historyUnavailable);
+        return;
+      }
+      if (data.result !== 'ok' && typeof data.message === 'string') {
+        renderHistoryFailed(data.message);
+        return;
+      }
+      if (!stockIsHistory(data)) {
+        renderHistoryFailed(T.loadFailed);
+        return;
+      }
+      renderHistory(data);
+    }).catch(function () {
+      renderHistoryFailed(T.loadFailed);
+    });
+  }
+
+  function renderHistory(data) {
+    clear(T.titleHistory);
+    root.appendChild(el('p', 'note', data.asOf + T.historyAsOfMid + data.days + T.historyDaysTail));
+    if (data.truncated) root.appendChild(el('p', 'note', T.historyManyHead + data.records.length + T.historyManyTail));
+    var notReady = data.kinds.filter(function (k) { return !k.ready; }).map(function (k) { return k.kind; });
+    if (notReady.length >= 1) root.appendChild(el('p', 'status error', T.historyNotReadyHead + notReady.join(T.listSep)));
+    var units = Object.create(null);
+    data.kinds.forEach(function (k) { if (!(k.kind in units)) units[k.kind] = k.unit; });
+    hv = { data: data, text: '', kind: null, sort: 'at', dir: 'desc', wide: stockIsWide(), showKind: data.kinds.length >= 2, units: units,
+      band: null, kindButtons: [], sortButtons: [], body: [], anchor: null };
+    root.appendChild(historyBand());
+    var row = el('div', 'action-row result-actions');
+    row.appendChild(button(T.openList, 'again', openList));
+    row.appendChild(closeButton());
+    root.appendChild(row);
+    hv.anchor = row;
+    renderHistoryBody();
+  }
+
+  /** 履歴の上の帯（探す欄・種類・並べ替え）。 */
+  function historyBand() {
+    var b = stickyBand('history');
+    hv.band = b;
+    b.appendChild(bandSearch('', function (v) {
+      hv.text = v;
+      renderHistoryBody();
+    }));
+    var kr = el('div', 'action-row');
+    var names = [null];
+    hv.data.kinds.forEach(function (k) { if (k.ready && names.indexOf(k.kind) < 0) names.push(k.kind); });
+    names.forEach(function (name) {
+      var kb = bandButton(choiceButton(name === null ? T.filterAll : name, name === null, function () { setHistoryKind(name); }));
+      hv.kindButtons.push({ name: name, el: kb });
+      kr.appendChild(kb);
+    });
+    b.appendChild(kr);
+    var sr = el('div', 'action-row');
+    STOCK_SORT_KEYS.forEach(function (key) {
+      var sb = bandButton(choiceButton('', false, function () { setHistorySort(key); }));
+      hv.sortButtons.push({ key: key, el: sb });
+      sr.appendChild(sb);
+    });
+    b.appendChild(sr);
+    updateHistorySort();
+    return b;
+  }
+
+  function historySortLabel(key) {
+    if (key === 'at') return T.colAt;
+    if (key === 'item') return T.colItem;
+    if (key === 'move') return T.colMove;
+    return T.colWho;
+  }
+
+  /** 並べ替えのボタンの字・選んだ印を今の並べ方に合わせる。 */
+  function updateHistorySort() {
+    hv.sortButtons.forEach(function (x) {
+      var on = x.key === hv.sort;
+      x.el.textContent = historySortLabel(x.key) + (on ? (hv.dir === 'desc' ? T.sortDesc : T.sortAsc) : '');
+      x.el.className = 'choice' + (on ? ' selected' : '');
+      x.el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+
+  /** 選んでいないキー → 既定の向き（日時は降順、ほかは昇順）。選んでいるキー → 逆の向き。 */
+  function setHistorySort(key) {
+    if (hv.sort === key) {
+      hv.dir = hv.dir === 'desc' ? 'asc' : 'desc';
+    } else {
+      hv.sort = key;
+      hv.dir = key === 'at' ? 'desc' : 'asc';
+    }
+    updateHistorySort();
+    renderHistoryBody();
+  }
+
+  function setHistoryKind(name) {
+    if (hv.kind === name) return;
+    hv.kind = name;
+    hv.kindButtons.forEach(function (x) {
+      var on = x.name === name;
+      x.el.className = 'choice' + (on ? ' selected' : '');
+      x.el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    renderHistoryBody();
+  }
+
+  /** 履歴の帯の下の本文（件数・見出し（広い画面）・記録の行）だけを作り直す。 */
+  function renderHistoryBody() {
+    hv.body.forEach(function (x) { if (x.parentNode === root) root.removeChild(x); });
+    hv.body = [];
+    var add = function (x) {
+      root.insertBefore(x, hv.anchor);
+      hv.body.push(x);
+    };
+    var records = hv.data.records;
+    if (records.length === 0) {
+      add(el('p', 'note', T.historyEmpty));
+      return;
+    }
+    var key = stockSearchKey(hv.text);
+    var list = records.filter(function (r) {
+      if (hv.kind !== null && r.kind !== hv.kind) return false;
+      return key === '' || stockSearchKey(r.item).indexOf(key) >= 0;
+    });
+    if (list.length === 0) {
+      add(el('p', 'note', T.historyNone));
+      return;
+    }
+    var live = list.filter(function (r) { return !r.cancelled; }).length;
+    var gone = list.length - live;
+    add(el('p', 'note', live + T.historyCountTail + (gone >= 1 ? T.historyCancelledHead + gone + T.historyCancelledTail : '')));
+    if (hv.wide) add(historyHead());
+    stockHistorySort(list, hv.sort, hv.dir).forEach(function (r) { add(historyRow(r)); });
+  }
+
+  /** 広い画面の表の列の幅。 */
+  function historyColumns() {
+    return hv.showKind ? '9em 8em minmax(0, 1fr) 4em 6em minmax(0, 12em)' : '9em minmax(0, 1fr) 4em 6em minmax(0, 12em)';
+  }
+
+  /** 広い画面の行を表の形にする。 */
+  function historyGrid(row) {
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = historyColumns();
+    row.style.columnGap = '12px';
+    row.style.alignItems = 'baseline';
+    row.style.padding = '8px 0';
+    row.style.borderBottom = '1px solid #c9cfc4';
+    return row;
+  }
+
+  /** 広い画面の列の見出しの行（押せない）。 */
+  function historyHead() {
+    var head = historyGrid(el('div', 'history-head'));
+    head.style.fontWeight = 'bold';
+    var cols = [T.colAt].concat(hv.showKind ? [T.colKind] : [], [T.colItem, T.colMove, T.colCount, T.colWho]);
+    cols.forEach(function (c) { head.appendChild(el('div', '', c)); });
+    return head;
+  }
+
+  /** 履歴の1記録の行。狭い画面は3段、広い画面は1行の表の形。取り消された記録は灰色・取り消し線・（取消）。 */
+  function historyRow(r) {
+    var row = el('div', r.cancelled ? 'history-row history-cancelled' : 'history-row');
+    if (r.cancelled) row.style.color = '#6b6b6b';
+    var u = hv.units[r.kind];
+    var time = el(hv.wide ? 'div' : 'span', '', r.time);
+    time.style.fontSize = '16px';
+    time.style.fontVariantNumeric = 'tabular-nums';
+    var kind = null;
+    if (hv.showKind) {
+      kind = el(hv.wide ? 'div' : 'span', '', r.kind);
+      kind.style.fontSize = '14px';
+      kind.style.color = '#4a524a';
+    }
+    var item = el('div');
+    item.style.fontSize = '18px';
+    item.style.fontWeight = 'bold';
+    item.style.overflowWrap = 'anywhere';
+    var name = el('span', '', r.item);
+    item.appendChild(name);
+    if (r.cancelled) {
+      name.style.textDecoration = 'line-through';
+      item.appendChild(el('span', '', T.historyCancelledMark));
+    }
+    var move = el(hv.wide ? 'div' : 'span', '', stockMoveLabel(r.move));
+    move.style.fontWeight = 'bold';
+    var count = el(hv.wide ? 'div' : 'span', '', r.count + (typeof u === 'string' ? u : ''));
+    if (r.cancelled) count.style.textDecoration = 'line-through';
+    var who = el(hv.wide ? 'div' : 'span', '', r.who === '' ? T.historyNoName : r.who);
+    who.style.overflowWrap = 'anywhere';
+    if (hv.wide) {
+      historyGrid(row);
+      row.appendChild(time);
+      if (kind !== null) row.appendChild(kind);
+      row.appendChild(item);
+      row.appendChild(move);
+      row.appendChild(count);
+      row.appendChild(who);
+      return row;
+    }
+    row.style.padding = '8px 0';
+    row.style.borderBottom = '1px solid #c9cfc4';
+    var line1 = el('div');
+    line1.appendChild(time);
+    if (kind !== null) {
+      kind.style.marginLeft = '8px';
+      line1.appendChild(kind);
+    }
+    var line3 = el('div');
+    count.style.marginLeft = '8px';
+    line3.appendChild(move);
+    line3.appendChild(count);
+    line3.appendChild(el('span', '', T.batchBullet));
+    line3.appendChild(who);
+    row.appendChild(line1);
+    row.appendChild(item);
+    row.appendChild(line3);
+    return row;
   }
 
   // ---- 取り消し ----
@@ -3190,6 +3547,7 @@ function stockAppStart(root, config, idToken, mode) {
   }
 
   if (mode === 'stocklist') openList();
+  else if (mode === 'stockhistory') openHistory();
   else openBatch();
 }
 

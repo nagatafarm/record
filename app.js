@@ -167,7 +167,7 @@ var RECORD_APP_MEMO_TEXT = {
   heading: 'メモ（必須）',
   note: '場所ごとに書いてください。全部終わった場所は「全部完了」を押すだけで入ります（30文字まで）',
   noPlace: '場所を選ぶと、場所ごとにメモを書けます',
-  placeholder: '例:A1-10ベンチ下完了',
+  placeholder: '例：A1-10ベンチ下完了',
   done: '全部完了',
   labelTail: 'のメモ',
   item: 'メモ',
@@ -548,6 +548,44 @@ function recordAppIsRecordOk_(data) {
   return data.result === 'ok' && typeof data.message === 'string' && Array.isArray(data.recorded);
 }
 
+/** ホームの画面（LINE の外のブラウザで開いたとき・?go=home）の文言。 */
+var RECORD_APP_HOME_TEXT = {
+  title: 'ホーム',
+  stockHeading: '在庫',
+  stockList: '在庫を見る',
+  stock: '入庫出庫',
+  history: '入出庫の履歴',
+  weedHeading: '除草',
+  record: '除草を記録',
+  map: '除草マップ',
+  back: 'ホームへ'
+};
+
+/**
+ * URL のクエリの go の値を読む（readGoMap と同じ読み方）。go がなければ liff.state の中の go を読む。
+ * 値がちょうど1個ならその字、ほかは ''。例外を投げない。
+ */
+function recordAppGo_(search) {
+  try {
+    if (typeof search !== 'string' || typeof URLSearchParams !== 'function') return '';
+    var p = new URLSearchParams(search);
+    var list = p.getAll('go');
+    if (list.length === 0) {
+      var states = p.getAll('liff.state');
+      if (states.length !== 1) return '';
+      var q = states[0].indexOf('?');
+      if (q < 0) return '';
+      var rest = states[0].slice(q + 1);
+      var h = rest.indexOf('#');
+      if (h >= 0) rest = rest.slice(0, h);
+      list = new URLSearchParams(rest).getAll('go');
+    }
+    return list.length === 1 && typeof list[0] === 'string' ? list[0] : '';
+  } catch (e) {
+    return '';
+  }
+}
+
 function recordAppStart_() {
   var root = document.getElementById('app');
   var T = RECORD_APP_TEXT;
@@ -814,7 +852,7 @@ function recordAppStart_() {
       input.style.flex = '1 1 auto';
       input.style.minWidth = '0';
       input.style.height = '48px';
-      input.style.fontSize = '16px';
+      input.style.fontSize = '18px';
       var done = button(TM.done, 'choice memo-done', function () {
         if (state.sending) return;
         state.memos[loc] = memoText(loc) === TM.done ? '' : TM.done;
@@ -1701,6 +1739,68 @@ function recordAppStart_() {
     });
   }
 
+  /** LINE のアプリの外（PC のブラウザなど）で開いたときだけ true。分からないとき（関数がない・例外）は false。 */
+  function isExternal() {
+    try {
+      return typeof liff.isInClient === 'function' && liff.isInClient() === false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 同じページの ?go=<value> に移る（移れなくても画面はそのまま）。 */
+  function goPage(value) {
+    try {
+      window.location.assign('?go=' + value);
+    } catch (e) {
+      // 移れなくても画面はそのまま
+    }
+  }
+
+  /** ホームの画面（通信しない）。在庫と除草の枠に、それぞれの画面へのボタンを並べる。 */
+  function renderHome() {
+    var TH = RECORD_APP_HOME_TEXT;
+    while (root.firstChild) root.removeChild(root.firstChild);
+    document.title = TH.title;
+    root.appendChild(el('h1', 'title', TH.title));
+    var cards = [
+      [TH.stockHeading, [[TH.stockList, 'stocklist'], [TH.stock, 'stock'], [TH.history, 'stockhistory']]],
+      [TH.weedHeading, [[TH.record, 'record'], [TH.map, 'map']]]
+    ];
+    cards.forEach(function (c) {
+      var card = el('div', 'card');
+      card.appendChild(el('h2', 'heading', c[0]));
+      c[1].forEach(function (x) {
+        var b = button(x[0], 'again', function () { goPage(x[1]); });
+        b.style.display = 'block';
+        b.style.width = '100%';
+        b.style.minHeight = '56px';
+        b.style.fontSize = '20px';
+        b.style.margin = '8px 0 0';
+        card.appendChild(b);
+      });
+      root.appendChild(card);
+    });
+  }
+
+  /** root の前に「ホームへ」のバーを1つ入れる（root の外なので、画面を作り直しても残る）。root に親がなければ出さない。 */
+  function addHomeBar() {
+    try {
+      var parent = root.parentNode;
+      if (!parent) return;
+      var bar = el('div', 'home-bar');
+      bar.style.maxWidth = '640px';
+      bar.style.margin = '0 auto';
+      bar.style.padding = '8px 12px 0';
+      var b = button(RECORD_APP_HOME_TEXT.back, 'again', function () { goPage('home'); });
+      b.style.minHeight = '44px';
+      bar.appendChild(b);
+      parent.insertBefore(bar, root);
+    } catch (e) {
+      // 出せなくても画面は出す
+    }
+  }
+
   if (!isValidConfig(config)) {
     showMessage(T.notConfigured);
     return;
@@ -1718,20 +1818,49 @@ function recordAppStart_() {
     var preset;
     var goMap;
     var stockMode;
+    var go;
     try {
       var search = window.location.search;
       preset = readPresetLocation(search);
       goMap = readGoMap(search);
       stockMode = typeof stockAppMode === 'function' ? stockAppMode(search) : '';
+      go = recordAppGo_(search);
     } catch (e) {
       preset = null;
       goMap = false;
       stockMode = '';
+      go = '';
+    }
+    var external = isExternal();
+    if (go === 'home') {
+      renderHome();
+      return;
+    }
+    if (go === 'stockhistory' && typeof stockAppStart === 'function') {
+      if (external) addHomeBar();
+      stockAppStart(root, config, token, 'stockhistory');
+      return;
     }
     if (stockMode !== '' && typeof stockAppStart === 'function') {
+      if (external) addHomeBar();
       stockAppStart(root, config, token, stockMode);
       return;
     }
+    if (go === 'record') {
+      if (external) addHomeBar();
+      loadForm(preset, false);
+      return;
+    }
+    if (goMap) {
+      if (external) addHomeBar();
+      loadForm(preset, true);
+      return;
+    }
+    if (external && preset === null) {
+      renderHome();
+      return;
+    }
+    if (external) addHomeBar();
     loadForm(preset, goMap);
   }, function () {
     showMessage(T.liffFailed);
