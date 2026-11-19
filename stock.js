@@ -185,7 +185,9 @@ var STOCK_APP_TEXT = {
   colWho: '人',
   sortDesc: ' ▼',
   sortAsc: ' ▲',
-  lastInHead: '最終入庫 '
+  lastInHead: '最終入庫 ',
+  thresholdHead: '目安 ',
+  thresholdNote: '「目安」は要発注の目安。残りが目安以下になると要発注です'
 };
 
 /** まとめての記録で一度に送れる品目の上限。 */
@@ -898,6 +900,17 @@ function stockAppStart(root, config, idToken, mode) {
       left.appendChild(last);
     }
     var right = amountEl(entry.stock, unit);
+    // T61 §0.7 数が記録されていて目安が 0〜99999 の整数のときだけ、数の下に小さく「目安 5」（単位なし・灰色の普通の字）
+    var th = entry.threshold;
+    if (typeof entry.stock === 'number' && typeof th === 'number' && Number.isInteger(th) && th >= 0 && th <= 99999) {
+      var guide = el('div', 'threshold', T.thresholdHead + th);
+      guide.style.fontSize = '13px';
+      guide.style.fontWeight = 'normal';
+      guide.style.color = '#4a524a';
+      guide.style.lineHeight = '1.3';
+      guide.style.fontVariantNumeric = 'tabular-nums';
+      right.appendChild(guide);
+    }
     right.style.flex = '0 0 auto';
     right.style.textAlign = 'right';
     right.style.whiteSpace = 'nowrap';
@@ -2888,6 +2901,17 @@ function stockAppStart(root, config, idToken, mode) {
     });
     if (orders >= 1) root.appendChild(el('p', 'status error', T.orderCountHead + orders + T.orderCountTail));
     else root.appendChild(el('p', 'note', T.orderCountHead + T.orderCountNone));
+    // T61 §0.7 目安の行が出る品目が1つ以上あるときだけ、要発注の行の直後に一言
+    var marked = false;
+    data.kinds.forEach(function (k) {
+      k.groups.forEach(function (g) {
+        g.items.forEach(function (e) {
+          var t = e.threshold;
+          if (typeof e.stock === 'number' && typeof t === 'number' && Number.isInteger(t) && t >= 0 && t <= 99999) marked = true;
+        });
+      });
+    });
+    if (marked) root.appendChild(el('p', 'note', T.thresholdNote));
     lv = { data: data, text: '', order: false, kinds: Object.create(null), groups: Object.create(null), band: null, filterAll: null, filterOrder: null,
       body: [], anchor: null, fkey: '', fkinds: Object.create(null), fgroups: Object.create(null) };
     lv.wide = stockIsWide();
