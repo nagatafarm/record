@@ -1783,7 +1783,8 @@ function recordAppStart_() {
       state.part = '';
       state.selected = presetSelection(data.groups, preset);
       state.mapUrl = data.mapUrl !== undefined ? data.mapUrl : null;
-      state.memberName = typeof data.memberName === 'string' ? data.memberName : null;
+      // T62 なえログから開いたときは「自分の名前」の枠を出さない（人は、なえログのログインで決まっている）
+      state.memberName = !naelogMode && typeof data.memberName === 'string' ? data.memberName : null;
       state.memberEditing = false;
       state.memberStatus = '';
       state.memo = data.memo === true;
