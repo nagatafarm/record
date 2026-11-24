@@ -1171,6 +1171,20 @@ function recordAppStart_() {
   function openMap() {
     if (state.mapUrl === null || state.sending) return;
     var opened = false;
+    // T62 なえログの画面にはめ込んで開いたとき：別の窓を開かず、この枠の中で地図に切り替える（戻るのは なえログの上の帯のタブで）
+    if (naelogMode) {
+      try {
+        window.location.assign(state.mapUrl);
+        opened = true;
+      } catch (e) {
+        opened = false;
+      }
+      var nextNaelog = opened ? '' : RECORD_APP_MAP_TEXT.failed;
+      if (nextNaelog === state.mapError) return;
+      state.mapError = nextNaelog;
+      renderSelect();
+      return;
+    }
     try {
       if (typeof liff.openWindow === 'function') {
         liff.openWindow({ url: state.mapUrl, external: false });
