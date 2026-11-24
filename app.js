@@ -20,6 +20,7 @@ var RECORD_APP_TEXT = {
   notConfigured: '記録画面の設定がまだです（管理者に連絡してください）',
   loading: '読み込み中…',
   liffFailed: 'LINE の準備ができませんでした。画面を閉じて開き直してください',
+  naelogLogin: 'なえログにログインしてから、もう一度開いてください',
   loadFailed: '読み込めませんでした。電波のよい所で開き直してください',
   emptyMasters: '場所マスタ・手段マスタが空です（管理者に連絡してください）',
   sending: '送信中…',
@@ -586,8 +587,64 @@ function recordAppGo_(search) {
   }
 }
 
+/** T62 URL のクエリに from=naelog がちょうど1個あるか（なえログの画面にはめ込んで開いた）。例外を投げない。 */
+function recordAppFromNaelog_(search) {
+  try {
+    if (typeof search !== 'string' || typeof URLSearchParams !== 'function') return false;
+    var list = new URLSearchParams(search).getAll('from');
+    return list.length === 1 && list[0] === 'naelog';
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * T62 なえログの合言葉を、はめ込んだ親の画面（なえログ。同じサイト）から受け取る。Promise で文字列を返す（受け取れなければ ''）。
+ * 親に { type: 'naelog-ready' } を送り、親が { type: 'naelog-token', token } を返す。同じサイトの親からの返事だけを受け取る。
+ * はめ込まれていない・5秒たっても返事がない・形がおかしい → ''。例外を投げない。
+ */
+function recordAppAskNaelog_(win) {
+  return new Promise(function (resolve) {
+    var done = false;
+    function finish(t) {
+      if (done) return;
+      done = true;
+      try {
+        win.removeEventListener('message', onMessage);
+      } catch (e) {
+        // 外せなくても続ける
+      }
+      resolve(t);
+    }
+    function onMessage(ev) {
+      try {
+        if (!ev || ev.origin !== win.location.origin || ev.source !== win.parent) return;
+        var d = ev.data;
+        if (!d || d.type !== 'naelog-token' || typeof d.token !== 'string') return;
+        finish(/^[A-Za-z0-9_-]{1,2000}\.[A-Za-z0-9_-]{1,200}$/.test(d.token) ? d.token : '');
+      } catch (e) {
+        // 読めない返事は無視する
+      }
+    }
+    try {
+      if (!win.parent || win.parent === win) {
+        finish('');
+        return;
+      }
+      win.addEventListener('message', onMessage);
+      win.parent.postMessage({ type: 'naelog-ready' }, win.location.origin);
+      win.setTimeout(function () { finish(''); }, 5000);
+    } catch (e) {
+      finish('');
+    }
+  });
+}
+
 function recordAppStart_() {
   var root = document.getElementById('app');
+  // T62 なえログの画面にはめ込んで開いたとき（?from=naelog）：なえログの合言葉で使う
+  var naelogMode = recordAppFromNaelog_(typeof window !== 'undefined' && window.location ? window.location.search : '');
+  var naelogToken = '';
   var T = RECORD_APP_TEXT;
   var TC = RECORD_APP_CANCEL_TEXT;
   var config = typeof RECORD_APP_CONFIG !== 'undefined' ? RECORD_APP_CONFIG : null;
@@ -1741,6 +1798,7 @@ function recordAppStart_() {
 
   /** LINE のアプリの外（PC のブラウザなど）で開いたときだけ true。分からないとき（関数がない・例外）は false。 */
   function isExternal() {
+    if (naelogMode) return true;
     try {
       return typeof liff.isInClient === 'function' && liff.isInClient() === false;
     } catch (e) {
@@ -1751,7 +1809,7 @@ function recordAppStart_() {
   /** 同じページの ?go=<value> に移る（移れなくても画面はそのまま）。 */
   function goPage(value) {
     try {
-      window.location.assign('?go=' + value);
+      window.location.assign('?go=' + value + (naelogMode ? '&from=naelog' : ''));
     } catch (e) {
       // 移れなくても画面はそのまま
     }
@@ -1807,11 +1865,13 @@ function recordAppStart_() {
   }
   showMessage(T.loading);
   Promise.resolve().then(function () {
+    // T62 なえログの画面にはめ込んで開いたとき（?from=naelog）：LINE のログインをせず、なえログの合言葉を親の画面から受け取る
+    if (naelogMode) return recordAppAskNaelog_(window).then(function (t) { naelogToken = t; });
     return liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: true });
   }).then(function () {
-    var token = liff.getIDToken();
+    var token = naelogMode ? (naelogToken === '' ? '' : 'naelog.' + naelogToken) : liff.getIDToken();
     if (typeof token !== 'string' || token === '') {
-      showMessage(T.liffFailed);
+      showMessage(naelogMode ? T.naelogLogin : T.liffFailed);
       return;
     }
     state.idToken = token;
