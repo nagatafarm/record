@@ -1064,7 +1064,8 @@ function recordAppStart_() {
     memberCard = null;
     selectionLine = null;
     var details = hasDetails();
-    if (state.mapUrl !== null) {
+    // T65 なえログの画面にはめ込んで開いたときは、「地図を見る」「除草を依頼する」を出さない（地図は なえログの上の帯の「マップ」で開く）
+    if (!naelogMode && state.mapUrl !== null) {
       var mapRow = el('div', 'action-row');
       var mapOpen = button(RECORD_APP_MAP_TEXT.open, 'again map-open', function () {
         openMap();
@@ -1074,7 +1075,7 @@ function recordAppStart_() {
       root.appendChild(mapRow);
     }
     if (state.mapError !== '') root.appendChild(el('p', 'status error', state.mapError));
-    if (state.request) {
+    if (!naelogMode && state.request) {
       var requestRow = el('div', 'action-row');
       var requestPageOpen = button(RECORD_APP_REQUEST_TEXT.pageOpen, 'again request-page-open', function () {
         if (state.sending) return;
