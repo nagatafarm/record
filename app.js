@@ -386,6 +386,21 @@ function isMapUrl(v) {
   return typeof v === 'string' && /^https:\/\/[^\s?#]+\?key=[^\s?#&]+$/.test(v);
 }
 
+/**
+ * T64 地図の URL に足す「&by=<名前>」（地図の「現場の声」のボタンに付ける名前）。
+ * 名前が文字列でない・前後の空白を除いて空・50 字を超える・userId の形（名前が取れなかったとき）・符号化できないときは ''（何も足さない）。
+ */
+function recordAppMapBy_(name) {
+  if (typeof name !== 'string') return '';
+  var s = name.replace(/[\r\n\t]/g, ' ').trim();
+  if (s === '' || s.length > 50 || /^U[0-9a-f]{32}$/.test(s)) return '';
+  try {
+    return '&by=' + encodeURIComponent(s);
+  } catch (e) {
+    return '';
+  }
+}
+
 /** Parser.js の normalizeText_ と同じ規則の正規化。 */
 function recordAppPresetKey_(s) {
   return s.normalize('NFKC').replace(/　/g, ' ').toUpperCase().trim();
@@ -1171,10 +1186,12 @@ function recordAppStart_() {
   function openMap() {
     if (state.mapUrl === null || state.sending) return;
     var opened = false;
+    // T64 分かっている名前（登録した「自分の名前」があればそれ、なければ表示名）を地図に渡す（地図の「現場の声」のボタンに付く。なければ何も足さない）
+    var mapBy = recordAppMapBy_(typeof state.memberName === 'string' && state.memberName !== '' ? state.memberName : state.name);
     // T62 なえログの画面にはめ込んで開いたとき：別の窓を開かず、この枠の中で地図に切り替える（戻るのは なえログの上の帯のタブで）
     if (naelogMode) {
       try {
-        window.location.assign(state.mapUrl + '&panel=float');
+        window.location.assign(state.mapUrl + '&panel=float' + mapBy);
         opened = true;
       } catch (e) {
         opened = false;
@@ -1187,7 +1204,7 @@ function recordAppStart_() {
     }
     try {
       if (typeof liff.openWindow === 'function') {
-        liff.openWindow({ url: state.mapUrl, external: false });
+        liff.openWindow({ url: state.mapUrl + mapBy, external: false });
         opened = true;
       }
     } catch (e) {
